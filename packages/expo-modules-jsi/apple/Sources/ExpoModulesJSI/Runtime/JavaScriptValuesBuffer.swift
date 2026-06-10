@@ -4,9 +4,13 @@ internal import jsi
 /// without the need to create a new container (e.g. `std.vector<facebook.jsi.Value>` or `[JavaScriptValue]`).
 /// Used mainly to pass function arguments from C++ to Swift.
 public struct JavaScriptValuesBuffer: JavaScriptType, ~Copyable {
-  // Safe to use unowned — the buffer's lifetime is scoped to a host function call,
-  // so the runtime is always alive while the buffer exists.
-  internal unowned let runtime: JavaScriptRuntime
+  // `unowned(unsafe)` — a raw, ARC-free reference. The buffer's lifetime is scoped to a host function
+  // call, so the runtime is always alive while the buffer exists; the liveness check that plain
+  // `unowned` would perform is therefore redundant. Plain `unowned` still emits an unowned
+  // retain/release whenever the buffer is copied or destroyed, which profiling showed on the host-call
+  // hot path (`destroy for JavaScriptValuesBuffer` → `swift_unownedRelease`). `unowned(unsafe)` drops
+  // that entirely. Only `subscript`/`copy`/`set` read this wrapper; the hot decode path uses `iRuntime`.
+  internal unowned(unsafe) let runtime: JavaScriptRuntime
 
   // The raw `facebook.jsi.IRuntime`, cached alongside the `JavaScriptRuntime` wrapper. `IRuntime` is
   // an immortal reference (`jsi.apinotes`), so reading it costs no ARC, whereas reading `.pointee`
