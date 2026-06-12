@@ -115,9 +115,59 @@ class SessionManager(
 
   suspend fun getInactiveSessions(): List<SessionWithMetrics> = database.sessionDao().getInactive()
 
+  /**
+   * Inactive sessions with their crash report payloads attached, most recent
+   * first. The payloads come from a separate batched query (`crash_reports`
+   * has no FK or `@Relation` — see [CrashReportEntity]).
+   */
+  suspend fun getInactiveSessionsWithCrashReports(): List<SessionWithChildren> {
+    val sessions = database.sessionDao().getInactive()
+    val payloads = getCrashReportPayloads(sessions.map { it.session.id })
+    return sessions.map { SessionWithChildren(it, payloads[it.session.id]) }
+  }
+
+  /**
+   * Persists a crash report attributed to `sessionId`, replacing any previous
+   * report for that session (only one crash per session is meaningful). The
+   * session row does not need to exist — see [CrashReportEntity] on orphans.
+   */
+  suspend fun setCrashReport(
+    sessionId: String,
+    payload: String,
+    createdAt: String = TimeUtils.getCurrentTimestampInISOFormat()
+  ) {
+    database.crashReportDao().upsert(
+      CrashReportEntity(sessionId = sessionId, payload = payload, createdAt = createdAt)
+    )
+  }
+
+  suspend fun getCrashReport(sessionId: String): String? =
+    database.crashReportDao().getBySessionId(sessionId)?.payload
+
+  private suspend fun getCrashReportPayloads(sessionIds: List<String>): Map<String, String> =
+    sessionIds
+      .chunked(SQLITE_MAX_BIND_VARIABLES)
+      .flatMap { chunk -> database.crashReportDao().getBySessionIds(chunk) }
+      .associate { it.sessionId to it.payload }
+
   suspend fun getSessionById(id: String): SessionWithMetrics? = database.sessionDao().getSessionWithMetricsBySessionId(id)
 
   suspend fun getSessionRow(id: String): Session? = database.sessionDao().getById(id)
+
+  suspend fun getAllSessionRows(): List<Session> = database.sessionDao().getAll()
+
+  /**
+   * The most recent main session other than `currentSessionId`, or `null` when
+   * none exists. Used to attribute crashes that carry no session id of their own
+   * (native crashes, lost crash files) to the session that most likely produced
+   * them — the previous process's. Android has no session `type` column yet, so
+   * every stored session is treated as main.
+   */
+  suspend fun getPreviousMainSessionId(currentSessionId: String?): String? =
+    getAllSessionRows()
+      .filter { it.id != currentSessionId }
+      .maxByOrNull { it.startTimestamp }
+      ?.id
 
   suspend fun getMetricsForSession(sessionId: String): List<Metric> =
     database.metricDao().getMetricsForSession(sessionId)
@@ -127,6 +177,8 @@ class SessionManager(
 
   suspend fun clearAllData() {
     database.sessionDao().deleteAll()
+    // No FK ties crash reports to sessions, so they need their own wipe.
+    database.crashReportDao().deleteAll()
   }
 
   suspend fun deactivateAllSessionsBefore(timestamp: String) {
@@ -135,10 +187,14 @@ class SessionManager(
 
   /**
    * Prunes inactive sessions whose `startTimestamp` is older than the
-   * retention window. Their metrics are removed via the foreign-key cascade.
+   * retention window. Their metrics are removed via the foreign-key cascade;
+   * crash reports have no FK and are pruned manually first (the order matters —
+   * once the session rows are gone their reports would look like fresh orphans).
    */
   suspend fun cleanupOldSessions() {
     val cutoffTimestamp = TimeUtils.getTimestampInISOFormatFromPast(MetricsConstants.SECONDS_TO_REMOVE_OLD_METRICS)
+    database.crashReportDao().deleteForSessionsOlderThan(cutoffTimestamp)
+    database.crashReportDao().deleteOrphansOlderThan(cutoffTimestamp)
     database.sessionDao().deleteSessionsOlderThan(cutoffTimestamp)
   }
 

@@ -187,18 +187,27 @@ export type SessionType = 'main' | 'foreground' | 'screen' | 'custom' | 'unknown
  */
 export type MetricInput = Omit<Metric, 'sessionId'>;
 export type CallStackFrame = {
+    /** @platform ios */
     binaryName?: string | null;
+    /** @platform ios */
     binaryUUID?: string | null;
+    /** @platform ios */
     address?: number | null;
+    /** @platform ios */
     offsetIntoBinaryTextSegment?: number | null;
+    /** @platform ios */
     sampleCount?: number | null;
     subFrames?: CallStackFrame[] | null;
     /**
-     * Resolved symbol from on-device `dladdr` symbolication. Swift and Itanium-ABI C++
+     * Human-readable symbol for the frame.
+     *
+     * On iOS, resolved by on-device `dladdr` symbolication: Swift and Itanium-ABI C++
      * names are demangled; Objective-C selectors and plain C symbols are returned as-is.
      * `null` when the binary is not loaded in this process or `dladdr` could not resolve it.
      *
-     * @platform ios
+     * On Android, the frame string of the JVM stack trace
+     * (for example `com.example.MainActivity.onCreate(MainActivity.kt:42)`) —
+     * always present since JVM stacks are symbolic by construction.
      */
     symbol?: string | null;
 };
@@ -209,12 +218,44 @@ export type CallStack = {
 export type CallStackTree = {
     callStacks?: CallStack[] | null;
 };
+/**
+ * A crash attributed to a session. The populated fields depend on the platform
+ * and crash type:
+ *
+ * - iOS (MetricKit): the numeric `exceptionType`/`exceptionCode`/`signal`
+ *   fields, plus `exceptionReason` for unhandled Objective-C exceptions.
+ * - Android JVM crashes: `exceptionReason` carries the throwable's
+ *   fully-qualified class name and message (numeric fields stay `null` —
+ *   they're Mach/Unix codes that don't exist for JVM exceptions).
+ * - Android native crashes: `signal` and `terminationReason` from the OS exit
+ *   record; no call stack in this release.
+ */
 export type CrashReport = {
+    /**
+     * Mach exception type (e.g. `EXC_BAD_ACCESS`).
+     * @platform ios
+     */
     exceptionType?: number | null;
+    /**
+     * Processor-specific exception code.
+     * @platform ios
+     */
     exceptionCode?: number | null;
+    /** Unix signal number (e.g. SIGSEGV = 11). */
     signal?: number | null;
+    /** Human-readable description of the termination reason. */
     terminationReason?: string | null;
+    /**
+     * Memory region info for bad-access crashes.
+     * @platform ios
+     */
     virtualMemoryRegionInfo?: string | null;
+    /**
+     * Exception details. On iOS, set for unhandled Objective-C exceptions; on
+     * Android, set for every JVM crash (`exceptionType`/`className` carry the
+     * fully-qualified throwable class, `composedMessage` the message including
+     * the `Caused by:` chain).
+     */
     exceptionReason?: {
         composedMessage: string;
         formatString: string;
@@ -224,8 +265,21 @@ export type CrashReport = {
         exceptionName: string;
     } | null;
     callStackTree?: CallStackTree | null;
+    /** App version at the time of the crash. */
+    appVersion: string;
+    /**
+     * Start of the diagnostic window. On iOS this is MetricKit's payload window
+     * (typically a 24-hour bucket); on Android the exact crash moment
+     * (`timestampBegin` equals `timestampEnd`). ISO 8601 — sub-second precision
+     * differs between platforms, so parse rather than string-compare.
+     */
     timestampBegin: string;
+    /** End of the diagnostic window. See `timestampBegin`. */
     timestampEnd: string;
+    /**
+     * When this device learned about the crash and constructed the report —
+     * the next launch after the crash, not the crash moment itself.
+     */
     ingestedAt: string;
 };
 /**
@@ -384,7 +438,7 @@ export type DebugSession = {
     metrics: Metric[];
     /** Log events recorded during the session. */
     logs: LogRecord[];
-    /** Crash report attached to the session, if any. Never present on Android (MetricKit is iOS-only). */
+    /** Crash report attached to the session, if any. */
     crashReport?: CrashReport | null;
 };
 export interface ExpoAppMetricsModuleType {

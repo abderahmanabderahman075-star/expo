@@ -23,8 +23,8 @@ object MetricsConstants {
 }
 
 @Database(
-  entities = [Metric::class, LogRecord::class, Session::class],
-  version = 15,
+  entities = [Metric::class, LogRecord::class, Session::class, CrashReportEntity::class],
+  version = 16,
   exportSchema = false
 )
 abstract class MetricsDatabase : RoomDatabase() {
@@ -33,6 +33,8 @@ abstract class MetricsDatabase : RoomDatabase() {
   abstract fun logDao(): LogDao
 
   abstract fun sessionDao(): SessionDao
+
+  abstract fun crashReportDao(): CrashReportDao
 
   companion object {
     @Volatile
@@ -166,6 +168,38 @@ data class SessionWithLogs(
   val logs: List<LogRecord>
 )
 
+/**
+ * One crash report per session, stored as the JSON-encoded payload of the
+ * cross-platform `CrashReport` shape — mirroring the iOS `crash_reports` table.
+ *
+ * Deliberately has **no foreign key** to `sessions`: a startup crash can be
+ * persisted before the session row ever reaches disk (the row insert is
+ * asynchronous), and a FK would reject or cascade-drop those orphan reports.
+ * Pruning is manual — see `SessionManager.cleanupOldSessions`.
+ */
+@Entity(tableName = "crash_reports")
+data class CrashReportEntity(
+  @PrimaryKey val sessionId: String,
+  /** JSON-encoded `CrashReport` payload. */
+  val payload: String,
+  /**
+   * ISO 8601 insert time. Only used to age out orphan reports whose session
+   * row never landed — attributed reports are pruned with their session.
+   */
+  val createdAt: String
+)
+
+/**
+ * A session row batch plus its crash report payload, named after the iOS
+ * `SessionWithChildren`. The crash report is attached manually rather than via
+ * `@Relation` because `crash_reports` has no FK (orphan reports must be able to
+ * precede or outlive their session row).
+ */
+data class SessionWithChildren(
+  val sessionWithMetrics: SessionWithMetrics,
+  val crashReportPayload: String? = null
+)
+
 @Dao
 interface MetricDao {
   @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -197,12 +231,49 @@ interface LogDao {
 }
 
 @Dao
+interface CrashReportDao {
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsert(crashReport: CrashReportEntity)
+
+  @Query("SELECT * FROM crash_reports WHERE sessionId = :sessionId")
+  suspend fun getBySessionId(sessionId: String): CrashReportEntity?
+
+  @Query("SELECT * FROM crash_reports WHERE sessionId IN (:sessionIds)")
+  suspend fun getBySessionIds(sessionIds: List<String>): List<CrashReportEntity>
+
+  @Query("SELECT COUNT(*) FROM crash_reports")
+  suspend fun count(): Int
+
+  // Mirrors `deleteSessionsOlderThan` for crash reports, including its
+  // `isActive = 0` guard (iOS prunes regardless of activity; Android deliberately
+  // protects live sessions, so their crash reports are protected too). Must run
+  // *before* the session prune — there's no FK cascade, so once the session rows
+  // are gone these reports would look like fresh orphans and outlive the
+  // retention window.
+  @Query(
+    "DELETE FROM crash_reports WHERE sessionId IN " +
+      "(SELECT id FROM sessions WHERE startTimestamp < :cutoffTimestamp AND isActive = 0)"
+  )
+  suspend fun deleteForSessionsOlderThan(cutoffTimestamp: String)
+
+  // Ages out orphan reports (no session row) past the retention window.
+  @Query("DELETE FROM crash_reports WHERE createdAt < :cutoffTimestamp AND sessionId NOT IN (SELECT id FROM sessions)")
+  suspend fun deleteOrphansOlderThan(cutoffTimestamp: String)
+
+  @Query("DELETE FROM crash_reports")
+  suspend fun deleteAll()
+}
+
+@Dao
 interface SessionDao {
   @Insert(onConflict = OnConflictStrategy.IGNORE)
   suspend fun insert(session: Session)
 
   @Query("SELECT * FROM sessions WHERE id = :id")
   suspend fun getById(id: String): Session?
+
+  @Query("SELECT * FROM sessions")
+  suspend fun getAll(): List<Session>
 
   @Query("UPDATE sessions SET isActive = 0, endTimestamp = :endTimestamp WHERE id = :id")
   suspend fun stopSessionAt(

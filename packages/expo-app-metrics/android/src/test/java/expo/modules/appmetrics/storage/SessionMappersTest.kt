@@ -261,4 +261,55 @@ class SessionMappersTest {
 
     assertNull(metric.params)
   }
+
+  @Test
+  fun `JsSession_fromSessionWithChildren decodes the crash report payload`() {
+    val payload =
+      """{"appVersion":"1.0.0","timestampBegin":"2026-06-12T10:00:00Z",""" +
+        """"exceptionReason":{"composedMessage":"java.lang.IllegalStateException: boom"}}"""
+    val value = SessionWithChildren(
+      sessionWithMetrics = SessionWithMetrics(session = makeSession(), metrics = emptyList()),
+      crashReportPayload = payload
+    )
+
+    val js = JsDebugSession.fromSessionWithChildren(value)
+
+    val crashReport = js.crashReport
+    assertEquals("1.0.0", crashReport?.get("appVersion"))
+    @Suppress("UNCHECKED_CAST")
+    val reason = crashReport?.get("exceptionReason") as? Map<String, Any?>
+    assertEquals("java.lang.IllegalStateException: boom", reason?.get("composedMessage"))
+  }
+
+  @Test
+  fun `JsSession_fromSessionWithChildren yields null crashReport when no payload is stored`() {
+    val value = SessionWithChildren(
+      sessionWithMetrics = SessionWithMetrics(session = makeSession(), metrics = emptyList())
+    )
+
+    val js = JsDebugSession.fromSessionWithChildren(value)
+
+    assertNull(js.crashReport)
+  }
+
+  @Test
+  fun `JsSession_fromSessionWithChildren yields null crashReport for a malformed payload`() {
+    val value = SessionWithChildren(
+      sessionWithMetrics = SessionWithMetrics(session = makeSession(), metrics = emptyList()),
+      crashReportPayload = "{ this is not valid json"
+    )
+
+    val js = JsDebugSession.fromSessionWithChildren(value)
+
+    assertNull(js.crashReport)
+  }
+
+  @Test
+  fun `JsSession_fromSessionWithMetrics omits crashReport by default`() {
+    val swm = SessionWithMetrics(session = makeSession(), metrics = emptyList())
+
+    val js = JsDebugSession.fromSessionWithMetrics(swm)
+
+    assertNull(js.crashReport)
+  }
 }
