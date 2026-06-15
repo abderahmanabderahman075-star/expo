@@ -508,4 +508,91 @@ export function test({ describe, expect, it, afterEach }) {
       });
     });
   });
+
+  describe('error handler', () => {
+    // `installErrorHandler` ran on import, wrapping `global.ErrorUtils`. The end-to-end tests drive
+    // the native `reportError` path directly (rather than a fatal dispatch through the live global
+    // handler, which would chain into React Native's dev red box) and read the recorded
+    // `expo.error.uncaught` log back from the main session. A separate test drives the installed
+    // global handler with a non-fatal error to cover the JS wrapper's parse-and-forward logic.
+    async function waitForUncaughtErrorLog(
+      predicate: (log: LogRecord) => boolean,
+      timeoutMs = EVENT_TIMEOUT_MS
+    ): Promise<LogRecord> {
+      const session = AppMetrics.getMainSession();
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const logs = await session.getLogs();
+        const match = logs.find((log) => log.name === 'expo.error.uncaught' && predicate(log));
+        if (match) {
+          return match;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error(`Timed out after ${timeoutMs}ms waiting for the expo.error.uncaught log`);
+    }
+
+    it('installs by wrapping the global ErrorUtils handler', () => {
+      // The handler is installed when expo-app-metrics is imported, so a global handler is present.
+      expect(typeof ErrorUtils.getGlobalHandler()).toBe('function');
+    });
+
+    it('records a fatal error as an expo.error.uncaught log event with its stack', async () => {
+      const message = `test-suite fatal error ${Date.now()}`;
+      AppMetrics.reportError({
+        name: 'TypeError',
+        message,
+        stack: [{ methodName: 'onPress', file: 'index.bundle', lineNumber: 42, column: 7 }],
+        isFatal: true,
+      });
+
+      const log = await waitForUncaughtErrorLog((entry) => entry.body === message);
+      expect(log.severity).toBe('fatal');
+      expect(log.body).toBe(message);
+
+      const attributes = log.attributes ?? {};
+      expect(attributes['expo.error.name']).toBe('TypeError');
+      expect(attributes['expo.error.is_fatal']).toBe(true);
+      expect(Array.isArray(attributes['expo.error.stack'])).toBe(true);
+      const stack = attributes['expo.error.stack'] as { methodName: string; lineNumber: number }[];
+      expect(stack.length).toBe(1);
+      expect(stack[0].methodName).toBe('onPress');
+      expect(stack[0].lineNumber).toBe(42);
+    });
+
+    it('records a non-fatal error at error severity', async () => {
+      const message = `test-suite non-fatal error ${Date.now()}`;
+      AppMetrics.reportError({ message, stack: [], isFatal: false });
+
+      const log = await waitForUncaughtErrorLog((entry) => entry.body === message);
+      expect(log.severity).toBe('error');
+      expect((log.attributes ?? {})['expo.error.is_fatal']).toBe(false);
+    });
+
+    it('parses and forwards an error from the installed global handler', () => {
+      // Exercise the JS wrapper itself (parse + forward) by driving the handler that
+      // `installErrorHandler` registered on import, with `reportError` stubbed to capture what it
+      // forwards. A non-fatal error is used so chaining to React Native's real handler only surfaces
+      // a dev console warning rather than a red box.
+      const installedHandler = ErrorUtils.getGlobalHandler();
+      const originalReportError = AppMetrics.reportError;
+      const reported: Parameters<typeof AppMetrics.reportError>[0][] = [];
+      AppMetrics.reportError = (error) => {
+        reported.push(error);
+      };
+      try {
+        installedHandler(new Error('installed-handler forward'), false);
+
+        expect(reported.length).toBe(1);
+        expect(reported[0].message).toBe('installed-handler forward');
+        expect(reported[0].isFatal).toBe(false);
+        // The wrapper parses `error.stack` into structured frames before forwarding.
+        expect(Array.isArray(reported[0].stack)).toBe(true);
+        expect(reported[0].stack.length).toBeGreaterThan(0);
+        expect(typeof reported[0].stack[0].methodName).toBe('string');
+      } finally {
+        AppMetrics.reportError = originalReportError;
+      }
+    });
+  });
 }

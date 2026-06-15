@@ -134,6 +134,16 @@ public final class AppMetricsModule: Module, UpdatesStateChangeListener {
       }
     }
 
+    // Records an unhandled JavaScript error captured by the JS-side `global.ErrorUtils` handler as a
+    // log event. The JS layer owns capture (and chaining to the previous handler); native records it
+    // through the same log pipeline as everything else, so it persists, attributes to the session,
+    // and dispatches with no special-case storage.
+    Function("reportError") { (report: ErrorReport) in
+      AppMetricsActor.isolated {
+        AppMetrics.mainSession.receiveLog(report.toLogRecord())
+      }
+    }
+
     Class(NetworkRequestObserver.self) {
       Constructor { (filter: NetworkRequestFilter?) in
         return NetworkRequestObserver(filter: filter)
@@ -169,4 +179,46 @@ private func storedSession(id: String) throws -> StoredSession? {
 struct MetricAttributes: Record {
   @Field var routeName: String?
   @Field var params: [String: Any]?
+}
+
+/// An unhandled JavaScript error forwarded from the JS-side `global.ErrorUtils` handler. The stack
+/// arrives already parsed into frames by `stacktrace-parser` on the JS side. Recorded as a log event.
+@Record
+struct ErrorReport {
+  var name: String?
+  var message: String = ""
+  var stack: [StackFrame] = []
+  var isFatal: Bool = false
+
+  /// Builds the `expo.error.uncaught` log event. Fatal errors are logged at `fatal` severity, the
+  /// rest at `error`; the error details ride along as `expo.error.*` attributes (frames nested).
+  func toLogRecord() -> LogRecord {
+    var attributes: [String: Any] = [
+      "expo.error.is_fatal": isFatal,
+      "expo.error.stack": stack.map { $0.toAttributes() },
+    ]
+    attributes["expo.error.name"] = name
+    return LogRecord(
+      name: "expo.error.uncaught",
+      body: message,
+      attributes: attributes,
+      severity: isFatal ? .fatal : .error
+    )
+  }
+
+  @Record
+  struct StackFrame {
+    var methodName: String = "<unknown>"
+    var file: String?
+    var lineNumber: Int?
+    var column: Int?
+
+    func toAttributes() -> [String: Any] {
+      var attributes: [String: Any] = ["methodName": methodName]
+      attributes["file"] = file
+      attributes["lineNumber"] = lineNumber
+      attributes["column"] = column
+      return attributes
+    }
+  }
 }

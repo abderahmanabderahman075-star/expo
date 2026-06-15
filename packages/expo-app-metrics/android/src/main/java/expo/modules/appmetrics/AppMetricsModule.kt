@@ -189,6 +189,17 @@ class AppMetricsModule : Module(), UpdatesStateChangeListener {
         sessionManager.addMetrics(listOf(metric.toMetric()), sessionId = metric.sessionId)
       }
 
+      // Records an unhandled JavaScript error captured by the JS-side `global.ErrorUtils` handler as
+      // a log event. The JS layer owns capture (and chaining to the previous handler); native records
+      // it through the same log pipeline as everything else, so it persists, attributes to the
+      // session, and dispatches with no special-case storage.
+      Function("reportError") { report: ErrorReport ->
+        scope.launch {
+          saveStartupMetricsIfNotSaved()
+          mainSession.addLogs(listOf(report.toLogRecord(mainSession.sessionId)))
+        }
+      }
+
       Function("getMainSession") {
         mainSession
       }
@@ -279,3 +290,51 @@ data class MetricAttributes(
   @Field val routeName: String? = null,
   @Field val params: Map<String, Any>? = null
 ) : Record
+
+/**
+ * An unhandled JavaScript error forwarded from the JS-side `global.ErrorUtils` handler. The stack
+ * arrives already parsed into frames by `stacktrace-parser` on the JS side. Recorded as a log event.
+ */
+@OptimizedRecord
+data class ErrorReport(
+  @Field val name: String? = null,
+  @Field val message: String = "",
+  @Field val stack: List<StackFrame> = emptyList(),
+  @Field val isFatal: Boolean = false
+) : Record {
+  /**
+   * Builds the `expo.error.uncaught` log event. Fatal errors are logged at `fatal` severity, the
+   * rest at `error`; the error details ride along as `expo.error.*` attributes (frames nested).
+   */
+  fun toLogRecord(sessionId: String): LogRecord {
+    val attributes = buildMap<String, Any?> {
+      put("expo.error.is_fatal", isFatal)
+      put("expo.error.stack", stack.map { it.toAttributes() })
+      name?.let { put("expo.error.name", it) }
+    }
+    return LogRecord(
+      sessionId = sessionId,
+      timestamp = TimeUtils.getCurrentTimestampInISOFormat(),
+      name = "expo.error.uncaught",
+      body = message,
+      severity = (if (isFatal) Severity.FATAL else Severity.ERROR).rawValue,
+      attributes = JsonAny.encodeMapToJsonString(attributes)
+    )
+  }
+
+  @OptimizedRecord
+  data class StackFrame(
+    @Field val methodName: String = "<unknown>",
+    @Field val file: String? = null,
+    @Field val lineNumber: Int? = null,
+    @Field val column: Int? = null
+  ) : Record {
+    fun toAttributes(): Map<String, Any?> =
+      buildMap {
+        put("methodName", methodName)
+        put("file", file)
+        put("lineNumber", lineNumber)
+        put("column", column)
+      }
+  }
+}

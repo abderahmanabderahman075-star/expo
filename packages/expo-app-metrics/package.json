@@ -32,7 +32,8 @@
   "author": "650 Industries, Inc.",
   "license": "MIT",
   "dependencies": {
-    "expo-updates-interface": "workspace:~56.0.1"
+    "expo-updates-interface": "workspace:~56.0.1",
+    "stacktrace-parser": "^0.1.10"
   },
   "devDependencies": {
     "@types/react": "~19.2.0",

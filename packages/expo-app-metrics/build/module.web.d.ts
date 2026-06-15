@@ -13,6 +13,7 @@ declare class ExpoAppMetricsModule extends NativeModule implements ExpoAppMetric
     setGlobalAttributes(attributes?: Record<string, LogAttributeValue> | null): void;
     clearStoredEntries(): Promise<void>;
     getInactiveSessions(): Promise<never[]>;
+    reportError(): void;
     getMainSession(): Session;
     getForegroundSession(): Promise<null>;
 }
