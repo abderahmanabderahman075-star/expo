@@ -1,4 +1,17 @@
----
+# 1. ثبّت EAS
+npm install -g eas-cli
+
+# 2. سجّل دخول (أنشئ حساب مجاني على expo.dev)
+eas login
+
+# 3. ادخل مجلد المشروع
+cd SmartBillAI
+
+# 4. ثبّت المكتبات
+npm install
+
+# 5. ابنِ APK
+eas build -p android --profile preview
 title: EAS CLI reference
 sidebar_title: EAS CLI
 description: EAS CLI is a command-line tool that allows you to interact with Expo Application Services (EAS) from your terminal.
