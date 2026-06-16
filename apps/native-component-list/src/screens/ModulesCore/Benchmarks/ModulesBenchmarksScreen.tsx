@@ -169,7 +169,12 @@ export default function ModulesBenchmarksScreen() {
       } catch (error) {
         console.warn(`Failed to persist result for ${benchmarkId}:`, error);
       }
-      return { group: group.title, label: benchmark.label, timeMs, iterations } satisfies BenchmarkLogEntry;
+      return {
+        group: group.title,
+        label: benchmark.label,
+        timeMs,
+        iterations,
+      } satisfies BenchmarkLogEntry;
     } catch (error) {
       console.warn(`Benchmark ${benchmarkId} failed:`, error);
       dispatch({ type: ActionType.MarkSkipped, benchmarkId });
